@@ -1,0 +1,8 @@
+streamlit
+google-genai
+pydantic
+requests
+openpyxl
+pymupdf
+pillow
+pillow-heif
