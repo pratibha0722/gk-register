@@ -93,15 +93,6 @@ st.caption(
     "duplicate rows are not blindly appended."
 )
 
-with st.expander("Extraction rules", expanded=False):
-    st.markdown(
-        """
-- **G.K. No:** `7282 (R)` becomes **Repeat 7282**.
-- **Diagnosis marker:** `(M)` → **Technique = Masked**; `(V)` → **Technique = Vantage**.
-- **Duplicate control:** an existing **S.No** is updated in place. If OCR later gives the same S.No with a different nonblank date, the existing date is preserved instead of creating a duplicate.
-- Images may be rotated/skewed; Gemini is instructed to interpret the page orientation visually.
-        """
-    )
 
 
 api1 = secret("GEMINI_API_KEY_1")
