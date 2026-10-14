@@ -69,16 +69,16 @@ def secret(name: str, default: str = "") -> str:
     return default
 
 
-api1 = secret("_API_KEY_1")
-api2 = secret("_API_KEY_2")
+api1 = secret("GEMINI_API_KEY_1")
+api2 = secret("GEMINI_API_KEY_2")
 webapp = secret("SHEET_WEBAPP_URL")
 receiver = secret("SHEET_RECEIVER_KEY")
-model = secret("_MODEL", "-3.5-flash")
+model = secret("GEMINI_MODEL", "gemini-3.5-flash")
 
 missing = [
     name
     for name, value in {
-        "_API_KEY_1": api1,
+        "GEMINI_API_KEY_1": api1,
         "SHEET_WEBAPP_URL": webapp,
         "SHEET_RECEIVER_KEY": receiver,
     }.items()
@@ -181,7 +181,7 @@ if st.button(
         log_box.code("\n".join(log_lines[-40:]))
         touch(str(message))
 
-    key_pool = KeyPool([api1, api2])
+    key_pool = GeminiKeyPool([api1, api2])
     writer = AppsScriptGKWriter(webapp, receiver)
     usage = UsageTotals()
 
@@ -234,7 +234,7 @@ if st.button(
                     )
                     touch(message)
 
-                # The animated spinner remains visible even while the llm
+                # The animated spinner remains visible even while the LLM
                 # request itself is blocking and there are no new log messages.
                 with st.spinner(
                     f"LLM is processing {uploaded.name}. "
