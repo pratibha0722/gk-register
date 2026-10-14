@@ -69,16 +69,16 @@ def secret(name: str, default: str = "") -> str:
     return default
 
 
-api1 = secret("GEMINI_API_KEY_1")
-api2 = secret("GEMINI_API_KEY_2")
+api1 = secret("_API_KEY_1")
+api2 = secret("_API_KEY_2")
 webapp = secret("SHEET_WEBAPP_URL")
 receiver = secret("SHEET_RECEIVER_KEY")
-model = secret("GEMINI_MODEL", "gemini-3.5-flash")
+model = secret("_MODEL", "-3.5-flash")
 
 missing = [
     name
     for name, value in {
-        "GEMINI_API_KEY_1": api1,
+        "_API_KEY_1": api1,
         "SHEET_WEBAPP_URL": webapp,
         "SHEET_RECEIVER_KEY": receiver,
     }.items()
@@ -181,7 +181,7 @@ if st.button(
         log_box.code("\n".join(log_lines[-40:]))
         touch(str(message))
 
-    key_pool = GeminiKeyPool([api1, api2])
+    key_pool = KeyPool([api1, api2])
     writer = AppsScriptGKWriter(webapp, receiver)
     usage = UsageTotals()
 
@@ -230,14 +230,14 @@ if st.button(
                     current_state.info(
                         f"File {file_index}/{total_files}: **{uploaded.name}** "
                         f"• page {page_no}/{file_total_pages} "
-                        f"• Gemini processing"
+                        f"• LLM processing"
                     )
                     touch(message)
 
-                # The animated spinner remains visible even while the Gemini
+                # The animated spinner remains visible even while the llm
                 # request itself is blocking and there are no new log messages.
                 with st.spinner(
-                    f"Gemini is processing {uploaded.name}. "
+                    f"LLM is processing {uploaded.name}. "
                     "The animated spinner means this request is still active..."
                 ):
                     summary = process_pages(
@@ -280,7 +280,7 @@ if st.button(
             )
 
             st.caption(
-                f"Gemini tokens this session: "
+                f"LLM tokens this session: "
                 f"input {usage.input_tokens}, "
                 f"output {usage.output_tokens}, "
                 f"thinking {usage.thinking_tokens}, "
@@ -302,9 +302,9 @@ if st.button(
         except QuotaUnavailable as exc:
             job_state.warning("🟡 PAUSED / QUOTA UNAVAILABLE")
             current_state.warning(str(exc))
-            touch("Gemini quota/rate limit reached")
+            touch("LLM quota/rate limit reached")
             st.warning(
-                "Both configured Gemini projects are currently quota/rate "
+                "Both configured LLM projects are currently quota/rate "
                 "limited. No further files were processed."
             )
 
