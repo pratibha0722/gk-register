@@ -8,9 +8,10 @@ import time
 import tomllib
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
-
+IST =ZoneInfo("Asia/Kolkata")
 from gk_core import (
     AppsScriptGKWriter,
     GeminiKeyPool,
@@ -151,7 +152,7 @@ if st.button(
     log_box = st.empty()
 
     started_monotonic = time.monotonic()
-    started_at = datetime.now()
+    started_at = datetime.now(IST)
 
     job_state.info(
         f"🟢 PROCESSING ACTIVE — started {started_at.strftime('%H:%M:%S')}"
@@ -171,12 +172,12 @@ if st.button(
 
     def touch(message: str) -> None:
         activity_state.caption(
-            f"Last activity: {datetime.now().strftime('%H:%M:%S')} "
+            f"Last activity: {datetime.now(IST).strftime('%H:%M:%S')} "
             f"• elapsed {elapsed_text()} • {message}"
         )
 
     def log(message: str) -> None:
-        stamped = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+        stamped = f"[{datetime.now(IST).strftime('%H:%M:%S')}] {message}"
         log_lines.append(stamped)
         log_box.code("\n".join(log_lines[-40:]))
         touch(str(message))
