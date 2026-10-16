@@ -1357,7 +1357,7 @@ def process_pages(
     for page_number, _, payload, mime_type, _page_id in page_list:
         if progress_callback:
             progress_callback(page_number, total_pages, f"Reading {filename} - page {page_number}/{total_pages}")
-        log(f"{filename}: page {page_number}/{total_pages} - Gemini extraction")
+        log(f"{filename}: page {page_number}/{total_pages} - LLM extraction")
 
         def status_cb(state: str, message: str) -> None:
             if sheet_writer:
