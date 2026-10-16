@@ -2,25 +2,28 @@
 """
 Shared extraction engine for handwritten/scanned GK register images/PDFs.
 
-Visible source columns (preserved in order):
-A  S.No
+Visible output columns (preserved in order):
+A  Serial Number
 B  Date
-C  G.K. No
-D  UHID No
-E  Name of Patient
-F  Age/Sex
-G  Diagnosis
-H  Dose
-I  Perc
-J  Volume
-K  GURA
-L  CONS
-M  PHY
-N  R.O
-O  RTT
-P  Technique (derived from diagnosis marker: (M)=Masked, (V)=Vantage)
-Q:R blank
-S  File Name
+C  Gamma Knife Number
+D  UHID Number
+E  Patient Name
+F  Mobile Number(s)
+G  Age
+H  Sex
+I  Diagnosis
+J  Mask (last visible mask/plan only, e.g. M2)
+K  Dose (from the same last mask/plan)
+L  Percentage (from the same last mask/plan)
+M  Volume (cc) (from the same last mask/plan)
+N  GURA (from the same last mask/plan)
+O  Consultant (from the same last mask/plan)
+P  Physician (from the same last mask/plan)
+Q  Residence (from the same last mask/plan)
+R  RTT (from the same last mask/plan)
+S  Technique (derived from diagnosis marker: (M)=Masked, (V)=Vantage)
+T:U blank
+V  File Name
 
 Key behavior:
 - Gemini multimodal extraction from images or one PDF page at a time.
@@ -74,8 +77,11 @@ SOURCE_FIELDS = [
     "gk_no",
     "uhid_no",
     "patient_name",
-    "age_sex",
+    "mobile_no",
+    "age",
+    "sex",
     "diagnosis",
+    "mask",
     "dose",
     "perc",
     "volume",
@@ -87,26 +93,29 @@ SOURCE_FIELDS = [
 ]
 
 EXCEL_HEADERS = [
-    "S.No",
+    "Serial Number",
     "Date",
-    "G.K. No",
-    "UHID No",
-    "Name of Patient",
-    "Age/Sex",
+    "Gamma Knife Number",
+    "UHID Number",
+    "Patient Name",
+    "Mobile Number(s)",
+    "Age",
+    "Sex",
     "Diagnosis",
+    "Mask",
     "Dose",
-    "Perc",
-    "Volume",
+    "Percentage",
+    "Volume (cc)",
     "GURA",
-    "CONS",
-    "PHY",
-    "R.O",
+    "Consultant",
+    "Physician",
+    "Residence",
     "RTT",
     "Technique",
 ]
 
-TECHNIQUE_COL = 16  # P
-FILENAME_COL = 19   # S; Q:R intentionally blank
+TECHNIQUE_COL = 19  # S
+FILENAME_COL = 22   # V; T:U intentionally blank
 FILENAME_HEADER = "File Name"
 
 
@@ -120,8 +129,11 @@ class GKRecord(BaseModel):
     gk_no: str = ""
     uhid_no: str = ""
     patient_name: str = ""
-    age_sex: str = ""
+    mobile_no: str = ""
+    age: str = ""
+    sex: str = ""
     diagnosis: str = ""
+    mask: str = ""
     dose: str = ""
     perc: str = ""
     volume: str = ""
@@ -142,25 +154,74 @@ You are transcribing ONE PAGE/IMAGE of a handwritten or scanned Gamma Knife
 register. Read the physical table visually. Accuracy and row alignment are more
 important than guessing.
 
-The logical columns are normally, left-to-right:
+The SOURCE register normally contains, left-to-right:
 1. S.No
 2. Date
 3. G.K. No
 4. UHID No
-5. Name of Patient
-6. Age/Sex
+5. Name of Patient (mobile number(s) may be written underneath/in the same cell)
+6. Age/Sex (both values may be combined in one source cell)
 7. Diagnosis
-8. Dose
-9. Perc
-10. Volume
-11. GURA
-12. CONS
-13. PHY
-14. R.O
-15. RTT
+8 onward. Treatment/plan details such as Mask/plan, Dose, Perc, Volume, GURA,
+   CONS, PHY, R.O, RTT.
 
-The right-side abbreviations may be handwritten and narrow. Keep their values in
-the correct row and column. Do not move a value to a neighboring row.
+Return ONE structured record per physical patient row with these output fields:
+- sno
+- date
+- gk_no
+- uhid_no
+- patient_name
+- mobile_no
+- age
+- sex
+- diagnosis
+- mask
+- dose
+- perc
+- volume
+- gura
+- cons
+- phy
+- ro
+- rtt
+
+NAME + MOBILE RULE:
+- The source Name of Patient cell can contain the patient's name and one or more
+  mobile numbers on a lower handwritten line.
+- patient_name must contain ONLY the patient's name, not phone numbers.
+- mobile_no must contain all visible mobile numbers from that same Name cell.
+- If more than one mobile number is visible, return them comma-separated in the
+  SAME field, for example: "9876543210, 9812345678".
+- Never take UHID/GK/S.No numbers as mobile numbers.
+
+AGE + SEX RULE:
+- The source register may show a combined value such as 55y/M, 24y/F, 36/F.
+- Split it: age contains only the age value (for example "55"), and sex contains
+  only M/F/Male/Female as visible.
+- Do not infer sex if it is unreadable.
+
+MULTIPLE MASK / PLAN RULE -- CRITICAL:
+- A single patient row can contain multiple treatment sub-entries such as M1,
+  M2, M3 (or similar multiple mask/plan entries).
+- KEEP ONLY THE LAST/LOWEST VISIBLE MASK/PLAN ENTRY in that patient row.
+- mask must be that last label, e.g. "M2" or "M3".
+- dose, perc, volume, gura, cons, phy, ro and rtt MUST ALL come from the SAME
+  last mask/plan sub-entry.
+- Never mix Dose from M1 with Volume/Consultant/etc. from M2.
+- Earlier mask/plan values must not be returned when a later one is visible.
+- If there is no explicit M1/M2/etc. label, mask may be blank and read the single
+  visible treatment values normally.
+
+VOLUME RULE:
+- Read the volume from the selected LAST mask/plan entry. Preserve the numeric
+  value accurately. Local code will normalize the output to cc.
+
+The narrow right-side abbreviations correspond to:
+- CONS = Consultant
+- PHY = Physician
+- R.O = Residence
+- GURA and RTT should be transcribed literally as written; do not invent an
+  expansion or value.
 
 LAYOUT / ORIENTATION:
 - Inspect THIS image/page independently. Do not assume fixed coordinates.
@@ -172,11 +233,13 @@ LAYOUT / ORIENTATION:
 
 ONE PHYSICAL PATIENT ROW = ONE RECORD:
 - Return every real data row exactly once, top-to-bottom.
-- source_row is the physical row number on this page starting at 1.
-- Never create two records for the same physical row.
+- source_row is the physical patient row number on this page starting at 1.
+- Multiple mask/plan sub-entries within one patient row DO NOT create extra
+  patient records. They are part of the same patient row; keep only the last one.
+- Never create two records for the same physical patient row.
 - If text wraps to a second handwritten line inside the same ruled row, combine
   it into the same record.
-- Omit a row only if the whole row is clearly cancelled/crossed out.
+- Omit a row only if the whole patient row is clearly cancelled/crossed out.
 
 S.No AND DATE ARE CRITICAL:
 - Copy S.No only from that row's S.No cell.
@@ -193,15 +256,18 @@ G.K. REPEAT RULE:
   "Repeat 7282".
 - Never invent a repeat marker.
 
-DIAGNOSIS MARKER RULE:
-- Preserve visible (M) or (V) inside diagnosis exactly when present.
-- (M) means Masked and (V) means Vantage; local code will derive Technique.
+DIAGNOSIS TECHNIQUE MARKER RULE:
+- This is DIFFERENT from M1/M2 mask numbering.
+- Preserve visible standalone (M) or (V) inside diagnosis exactly when present.
+- (M) means Technique = Masked and (V) means Technique = Vantage; local code
+  will derive Technique.
+- Do not interpret mask labels M1/M2/M3 as the diagnosis (M) technique marker.
 - Do not invent M/V if it is not visibly written.
 
 TRANSCRIPTION:
 - Copy handwriting literally; do not medically 'correct' names/diagnoses.
 - Do not infer missing values from nearby rows.
-- Keep numbers and units such as Gy, %, cc, mm exactly when legible.
+- Keep numbers and units such as Gy and % when legible.
 - For unreadable cells, return "" rather than hallucinating.
 - Do not include month headings such as SEPTEMBER 2026 as patient rows.
 """
@@ -252,6 +318,8 @@ def normalize_gk_repeat(value: str) -> str:
 def diagnosis_and_technique(value: str) -> tuple[str, str]:
     s = clean_text(value)
     technique = ""
+    # Only standalone parenthesized M/V are technique markers. M1/M2 mask
+    # numbering must not trigger this rule.
     if re.search(r"(?i)\(\s*m\s*\)", s):
         technique = "Masked"
         s = re.sub(r"(?i)\(\s*m\s*\)", " ", s)
@@ -262,16 +330,97 @@ def diagnosis_and_technique(value: str) -> tuple[str, str]:
     return s, technique
 
 
+def _normalize_phone_token(token: str) -> str:
+    raw = clean_text(token)
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 12 and digits.startswith("91"):
+        return "+91" + digits[2:]
+    if len(digits) == 11 and digits.startswith("0"):
+        return digits[1:]
+    return digits
+
+
+def split_name_and_mobile(patient_name: str, mobile_no: str = "") -> tuple[str, str]:
+    """Separate 10-digit-style phone numbers from the patient name cell."""
+    name = clean_text(patient_name)
+    mobile = clean_text(mobile_no)
+
+    candidates: list[str] = []
+    # Detect Indian-style mobile numbers, optionally with +91/0 and separators.
+    phone_re = re.compile(r"(?<!\d)(?:(?:\+?91)[\s-]?)?[6-9](?:[\s-]?\d){9}(?!\d)")
+
+    for source in (mobile, name):
+        for m in phone_re.finditer(source):
+            normalized = _normalize_phone_token(m.group(0))
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+
+    # Remove phones from the visible patient name so the name column stays clean.
+    name = phone_re.sub(" ", name)
+    name = re.sub(r"\s+", " ", name).strip(" ,;/|-_")
+
+    return name, ", ".join(candidates)
+
+
+def split_age_and_sex(age: str, sex: str = "") -> tuple[str, str]:
+    a = clean_text(age)
+    sx = clean_text(sex)
+    combined = clean_text(" ".join(x for x in (a, sx) if x))
+
+    # Find sex when it was returned inside age (e.g. 55y/M, 36F).
+    sex_match = re.search(r"(?i)(?:^|[^a-z])(male|female|m|f)(?:$|[^a-z])", combined)
+    if sex_match:
+        token = sex_match.group(1).lower()
+        sx = "M" if token in {"m", "male"} else "F"
+    else:
+        if re.fullmatch(r"(?i)male|m", sx):
+            sx = "M"
+        elif re.fullmatch(r"(?i)female|f", sx):
+            sx = "F"
+        else:
+            sx = clean_text(sx)
+
+    # Age is usually an integer followed by y/yr/years and/or sex.
+    age_match = re.search(r"(?<!\d)(\d{1,3})(?!\d)", a or combined)
+    age_out = age_match.group(1) if age_match else clean_text(a)
+    return age_out, sx
+
+
+def normalize_volume_cc(value: str) -> str:
+    s = clean_text(value)
+    if not s:
+        return ""
+    # Keep the reading, but normalize common cc spellings and make the unit explicit.
+    s = re.sub(r"(?i)\s*(?:c\.?c\.?|cm\s*3|cm\^3)\s*$", "", s).strip()
+    if not s:
+        return ""
+    return f"{s} cc"
+
+
 def normalize_record(record: GKRecord) -> GKRecord:
     data = record.model_dump()
     for k in list(data):
         if k != "source_row":
             data[k] = clean_text(data[k])
+
     data["sno"] = normalize_sno(data["sno"])
     data["gk_no"] = normalize_gk_repeat(data["gk_no"])
+
+    name, mobile = split_name_and_mobile(data["patient_name"], data.get("mobile_no", ""))
+    data["patient_name"] = name
+    data["mobile_no"] = mobile
+
+    age, sex = split_age_and_sex(data.get("age", ""), data.get("sex", ""))
+    data["age"] = age
+    data["sex"] = sex
+
     diagnosis, technique = diagnosis_and_technique(data["diagnosis"])
     data["diagnosis"] = diagnosis
     data["technique"] = technique
+
+    data["mask"] = clean_text(data.get("mask", ""))
+    data["volume"] = normalize_volume_cc(data.get("volume", ""))
+
     return GKRecord(**data)
 
 
@@ -326,10 +475,11 @@ def dedupe_records(records: Iterable[GKRecord]) -> List[GKRecord]:
 
 def record_to_row(r: GKRecord) -> List[str]:
     return [
-        r.sno, r.date, r.gk_no, r.uhid_no, r.patient_name, r.age_sex,
-        r.diagnosis, r.dose, r.perc, r.volume, r.gura, r.cons, r.phy,
-        r.ro, r.rtt, r.technique,
+        r.sno, r.date, r.gk_no, r.uhid_no, r.patient_name, r.mobile_no,
+        r.age, r.sex, r.diagnosis, r.mask, r.dose, r.perc, r.volume,
+        r.gura, r.cons, r.phy, r.ro, r.rtt, r.technique,
     ]
+
 
 
 # -----------------------------------------------------------------------------
@@ -755,12 +905,50 @@ def _fallback_identity(row: List[str]) -> str:
     return "|".join(clean_text(x).casefold() for x in pieces)
 
 
+def _legacy_excel_layout(ws) -> bool:
+    return (
+        clean_text(ws.cell(1, 1).value).casefold() == "s.no"
+        and clean_text(ws.cell(1, 6).value).casefold() == "age/sex"
+    )
+
+
+def migrate_legacy_excel_layout(ws) -> None:
+    """Migrate the original 16-field GK Excel layout to the new split schema."""
+    if not _legacy_excel_layout(ws):
+        return
+
+    old_rows = []
+    for r in range(2, ws.max_row + 1):
+        old = [clean_text(ws.cell(r, c).value) for c in range(1, 20)]
+        if not any(old):
+            continue
+        name, mobile = split_name_and_mobile(old[4], "")
+        age, sex = split_age_and_sex(old[5], "")
+        new_values = [
+            old[0], old[1], old[2], old[3], name, mobile, age, sex,
+            old[6], "", old[7], old[8], normalize_volume_cc(old[9]),
+            old[10], old[11], old[12], old[13], old[14], old[15],
+        ]
+        old_file_name = old[18] if len(old) > 18 else ""
+        old_rows.append((new_values, old_file_name))
+
+    # Clear only the data/header area we own, then rewrite in the new layout.
+    for row in ws.iter_rows(min_row=1, max_row=max(ws.max_row, 1), min_col=1, max_col=FILENAME_COL):
+        for cell in row:
+            cell.value = None
+
+    for r_idx, (values, file_name) in enumerate(old_rows, start=2):
+        for c_idx, value in enumerate(values, start=1):
+            ws.cell(r_idx, c_idx, value)
+        ws.cell(r_idx, FILENAME_COL, file_name)
+
+
 def ensure_excel_layout(ws) -> None:
+    migrate_legacy_excel_layout(ws)
+
     for col, header in enumerate(EXCEL_HEADERS, start=1):
-        if ws.cell(1, col).value in (None, ""):
-            ws.cell(1, col, header)
-    if ws.cell(1, FILENAME_COL).value in (None, ""):
-        ws.cell(1, FILENAME_COL, FILENAME_HEADER)
+        ws.cell(1, col, header)
+    ws.cell(1, FILENAME_COL, FILENAME_HEADER)
 
     fill = PatternFill("solid", fgColor="1F4E78")
     font = Font(color="FFFFFF", bold=True)
@@ -772,12 +960,13 @@ def ensure_excel_layout(ws) -> None:
     ws.freeze_panes = "A2"
 
     widths = {
-        1: 10, 2: 14, 3: 18, 4: 16, 5: 28, 6: 12, 7: 28,
-        8: 12, 9: 10, 10: 12, 11: 12, 12: 14, 13: 14, 14: 18,
-        15: 12, 16: 14, 19: 28,
+        1: 12, 2: 14, 3: 20, 4: 16, 5: 28, 6: 24,
+        7: 8, 8: 8, 9: 28, 10: 10, 11: 12, 12: 12,
+        13: 14, 14: 12, 15: 16, 16: 16, 17: 16, 18: 12,
+        19: 14, 22: 28,
     }
     for col, width in widths.items():
-        ws.column_dimensions[chr(64 + col) if col <= 26 else str(col)].width = width
+        ws.column_dimensions[chr(64 + col)].width = width
 
 
 def open_or_create_workbook(output: Path):
@@ -797,7 +986,7 @@ def build_excel_index(ws) -> tuple[dict[str, int], dict[str, int]]:
     by_sno: dict[str, int] = {}
     by_fallback: dict[str, int] = {}
     for r in range(2, ws.max_row + 1):
-        values = [clean_text(ws.cell(r, c).value) for c in range(1, 17)]
+        values = [clean_text(ws.cell(r, c).value) for c in range(1, len(EXCEL_HEADERS) + 1)]
         sno = normalize_sno(values[0]).casefold()
         if sno and sno not in by_sno:
             by_sno[sno] = r
