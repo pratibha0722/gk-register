@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
-"""GK Register Streamlit app with camera upload and clear live processing status."""
+"""GK Register Streamlit uploader with Google Drive persistence + background queue."""
 
 from __future__ import annotations
 
-import tempfile
+import base64
+import hashlib
+import mimetypes
 import time
 import tomllib
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import requests
 import streamlit as st
-
-from gk_core import (
-    AppsScriptGKWriter,
-    GeminiKeyPool,
-    QuotaUnavailable,
-    UsageTotals,
-    iter_uploaded_pages,
-    process_pages,
-)
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -58,38 +52,29 @@ def secret(name: str, default: str = "") -> str:
     except Exception:
         pass
 
-    try:
-        value = TOML_SECRETS.get(name, "")
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    except Exception:
-        pass
-
+    value = TOML_SECRETS.get(name, "")
+    if value is not None and str(value).strip():
+        return str(value).strip()
     return default
 
 
-api1 = secret("GEMINI_API_KEY_1")
-api2 = secret("GEMINI_API_KEY_2")
-webapp = secret("SHEET_WEBAPP_URL")
-receiver = secret("SHEET_RECEIVER_KEY")
-model = secret("GEMINI_MODEL", "gemini-3.5-flash")
+WEBAPP_URL = secret("SHEET_WEBAPP_URL")
+RECEIVER_KEY = secret("SHEET_RECEIVER_KEY")
+APP_PASSWORD = secret("APP_PASSWORD")
 
 missing = [
     name
     for name, value in {
-        "GEMINI_API_KEY_1": api1,
-        "SHEET_WEBAPP_URL": webapp,
-        "SHEET_RECEIVER_KEY": receiver,
+        "SHEET_WEBAPP_URL": WEBAPP_URL,
+        "SHEET_RECEIVER_KEY": RECEIVER_KEY,
     }.items()
-    if not str(value).strip()
+    if not value
 ]
 
 if missing:
     st.error("Missing Streamlit secrets: " + ", ".join(missing))
     st.stop()
 
-
-APP_PASSWORD = secret("APP_PASSWORD")
 if APP_PASSWORD:
     entered = st.text_input("Access password", type="password")
     if entered != APP_PASSWORD:
@@ -97,8 +82,37 @@ if APP_PASSWORD:
         st.stop()
 
 
+def receiver_post(payload: dict, timeout: int = 90) -> dict:
+    body = {
+        "key": RECEIVER_KEY,
+        "dataset": "gk",
+        **payload,
+    }
+    response = requests.post(
+        WEBAPP_URL,
+        json=body,
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "Receiver rejected request"))
+    return result
+
+
+def mime_for(name: str, uploaded_type: str | None) -> str:
+    if uploaded_type:
+        return uploaded_type
+    guessed, _ = mimetypes.guess_type(name)
+    return guessed or "application/octet-stream"
+
+
 st.title("GK Register → Google Sheet")
-st.caption("Upload register photos/scans or PDFs, or take a photo directly.")
+st.caption(
+    "Upload images/PDFs or take a photo. Files are saved to your restricted "
+    "Google Drive folder first, then processed from a persistent queue."
+)
 
 uploads = st.file_uploader(
     "Upload image(s) or PDF(s)",
@@ -106,7 +120,7 @@ uploads = st.file_uploader(
     accept_multiple_files=True,
 )
 
-#camera_photo = st.camera_input("Take photo directly from camera")
+# Camera permission is requested only after the user explicitly clicks Take photo.
 if "show_camera" not in st.session_state:
     st.session_state.show_camera = False
 
@@ -114,23 +128,18 @@ if st.button("📷 Take photo"):
     st.session_state.show_camera = True
 
 camera_photo = None
-
 if st.session_state.show_camera:
     camera_photo = st.camera_input("Camera")
+
 all_uploads = list(uploads or [])
 if camera_photo is not None:
     all_uploads.append(camera_photo)
 
-
 if all_uploads:
-    image_uploads = [
-        f for f in all_uploads
-        if Path(f.name).suffix.lower() != ".pdf"
-    ]
-
-    if image_uploads:
-        cols = st.columns(min(3, len(image_uploads)))
-        for i, f in enumerate(image_uploads[:3]):
+    images = [f for f in all_uploads if Path(f.name).suffix.lower() != ".pdf"]
+    if images:
+        cols = st.columns(min(3, len(images)))
+        for i, f in enumerate(images[:3]):
             try:
                 cols[i % len(cols)].image(
                     f.getvalue(),
@@ -141,179 +150,102 @@ if all_uploads:
                 pass
 
 
+if "last_queue_ids" not in st.session_state:
+    st.session_state.last_queue_ids = []
+
 if st.button(
-    "Process and update Google Sheet",
+    "Upload to Drive and start processing",
     type="primary",
     disabled=not all_uploads,
 ):
-    st.warning(
-        "Keep this browser tab open until the job says Finished. "
-        "This Streamlit version processes the upload in the active web session."
-    )
-
-    job_state = st.empty()
-    current_state = st.empty()
-    activity_state = st.empty()
     progress = st.progress(0.0)
-    log_box = st.empty()
+    status = st.empty()
+    queued = []
+    total = len(all_uploads)
 
-    started_monotonic = time.monotonic()
-    started_at = datetime.now(IST)
+    try:
+        for i, uploaded in enumerate(all_uploads, start=1):
+            raw = uploaded.getvalue()
+            display_name = uploaded.name
 
-    job_state.info(
-        f"🟢 PROCESSING ACTIVE — started {started_at.strftime('%H:%M:%S')}"
-    )
+            # Camera widgets often return a generic filename. Give camera images
+            # a useful unique name before saving them to Drive.
+            if uploaded is camera_photo:
+                suffix = Path(display_name).suffix.lower() or ".jpg"
+                display_name = datetime.now(IST).strftime("camera_%Y%m%d_%H%M%S") + suffix
 
-    log_lines: list[str] = []
+            status.info(f"Saving {i}/{total}: {display_name}")
+            sha256 = hashlib.sha256(raw).hexdigest()
 
-    def elapsed_text() -> str:
-        sec = int(time.monotonic() - started_monotonic)
-        mins, seconds = divmod(sec, 60)
-        hours, mins = divmod(mins, 60)
-        if hours:
-            return f"{hours}h {mins}m {seconds}s"
-        if mins:
-            return f"{mins}m {seconds}s"
-        return f"{seconds}s"
+            result = receiver_post(
+                {
+                    "action": "enqueue_upload",
+                    "file_name": display_name,
+                    "mime_type": mime_for(display_name, getattr(uploaded, "type", None)),
+                    "content_sha256": sha256,
+                    "data_base64": base64.b64encode(raw).decode("ascii"),
+                },
+                timeout=120,
+            )
 
-    def touch(message: str) -> None:
-        activity_state.caption(
-            f"Last activity: {datetime.now(IST).strftime('%H:%M:%S')} "
-            f"• elapsed {elapsed_text()} • {message}"
+            queued.append(result)
+            progress.progress(i / total)
+
+        st.session_state.last_queue_ids = [
+            str(item.get("queue_id", ""))
+            for item in queued
+            if item.get("queue_id")
+        ]
+
+        status.success(
+            f"{len(queued)} file(s) saved to Drive and queued successfully."
+        )
+        st.success(
+            "You can close this page now. The background worker continues from "
+            "Google Drive and automatically retries pending files when API quota "
+            "becomes available again."
         )
 
-    def log(message: str) -> None:
-        stamped = f"[{datetime.now(IST).strftime('%H:%M:%S')}] {message}"
-        log_lines.append(stamped)
-        log_box.code("\n".join(log_lines[-40:]))
-        touch(str(message))
+        for item in queued:
+            name = item.get("file_name", "File")
+            drive_url = item.get("drive_url", "")
+            queue_status = item.get("status", "Pending")
+            if drive_url:
+                st.markdown(f"- [{name}]({drive_url}) — **{queue_status}**")
+            else:
+                st.write(f"- {name} — {queue_status}")
 
-    key_pool = GeminiKeyPool([api1, api2])
-    writer = AppsScriptGKWriter(webapp, receiver)
-    usage = UsageTotals()
+    except Exception as exc:
+        status.error("Upload/queue operation stopped.")
+        st.exception(exc)
 
-    with tempfile.TemporaryDirectory() as td:
-        session_excel = Path(td) / "gk_register_session.xlsx"
 
-        total_files = len(all_uploads)
-        done_files = 0
-
-        totals = {
-            "records": 0,
-            "inserted": 0,
-            "updated": 0,
-            "conflicts": 0,
-        }
-
+if st.session_state.last_queue_ids:
+    if st.button("Refresh processing status"):
         try:
-            for file_index, uploaded in enumerate(all_uploads, start=1):
-                data = uploaded.getvalue()
-                pages = list(iter_uploaded_pages(uploaded.name, data))
-                total_pages = max(1, len(pages))
-
-                current_state.info(
-                    f"File {file_index}/{total_files}: **{uploaded.name}** "
-                    f"• {total_pages} page(s)"
-                )
-                touch(f"Preparing {uploaded.name}")
-
-                def on_progress(
-                    page_no: int,
-                    file_total_pages: int,
-                    message: str,
-                ) -> None:
-                    page_fraction = (
-                        (page_no - 1) / max(file_total_pages, 1)
-                    )
-                    overall_fraction = (
-                        done_files + page_fraction
-                    ) / max(total_files, 1)
-
-                    progress.progress(
-                        min(0.99, max(0.01, overall_fraction))
-                    )
-
-                    current_state.info(
-                        f"File {file_index}/{total_files}: **{uploaded.name}** "
-                        f"• page {page_no}/{file_total_pages} "
-                        f"• LLM processing"
-                    )
-                    touch(message)
-
-                with st.spinner(
-                    f"LLM is processing {uploaded.name}. "
-                    "The animated spinner means this request is still active..."
-                ):
-                    summary = process_pages(
-                        filename=uploaded.name,
-                        pages=pages,
-                        key_pool=key_pool,
-                        model=model,
-                        excel_path=session_excel,
-                        sheet_writer=writer,
-                        wait_on_quota=False,
-                        usage=usage,
-                        log=log,
-                        progress_callback=on_progress,
-                    )
-
-                totals["records"] += summary.extracted_records
-                totals["inserted"] += summary.excel_inserted
-                totals["updated"] += summary.excel_updated
-                totals["conflicts"] += summary.date_conflicts
-
-                done_files += 1
-                progress.progress(done_files / total_files)
-
-                log(
-                    f"Completed {uploaded.name}: "
-                    f"{summary.extracted_records} row(s)"
-                )
-
-            current_state.success("All uploaded files processed.")
-            touch("Job completed")
-            job_state.success(
-                f"✅ FINISHED — elapsed {elapsed_text()}"
+            result = receiver_post(
+                {
+                    "action": "queue_status",
+                    "queue_ids": st.session_state.last_queue_ids,
+                },
+                timeout=60,
             )
-
-            st.success(
-                f"Extracted {totals['records']} row(s). "
-                f"Session Excel: {totals['inserted']} inserted, "
-                f"{totals['updated']} updated, "
-                f"{totals['conflicts']} date conflict(s) protected."
-            )
-
-            st.caption(
-                f"LLM tokens this session: "
-                f"input {usage.input_tokens}, "
-                f"output {usage.output_tokens}, "
-                f"thinking {usage.thinking_tokens}, "
-                f"total {usage.total_tokens}."
-            )
-
-            if session_excel.exists():
-                with open(session_excel, "rb") as fh:
-                    st.download_button(
-                        "Download this session Excel",
-                        data=fh.read(),
-                        file_name="gk_register_session.xlsx",
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument."
-                            "spreadsheetml.sheet"
-                        ),
+            items = result.get("items", [])
+            if items:
+                rows = []
+                for item in items:
+                    rows.append(
+                        {
+                            "File": item.get("file_name", ""),
+                            "Status": item.get("status", ""),
+                            "Attempts": item.get("attempts", 0),
+                            "Records": item.get("records", 0),
+                            "Last update": item.get("last_update", ""),
+                            "Message": item.get("last_error", ""),
+                        }
                     )
-
-        except QuotaUnavailable as exc:
-            job_state.warning("🟡 PAUSED / QUOTA UNAVAILABLE")
-            current_state.warning(str(exc))
-            touch("LLM quota/rate limit reached")
-            st.warning(
-                "Both configured LLM projects are currently quota/rate "
-                "limited. No further files were processed."
-            )
-
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("No queue records found for this upload session.")
         except Exception as exc:
-            job_state.error("🔴 STOPPED WITH ERROR")
-            current_state.error("Processing stopped")
-            touch("Processing stopped with an error")
             st.exception(exc)
