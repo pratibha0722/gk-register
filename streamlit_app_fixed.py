@@ -106,8 +106,17 @@ uploads = st.file_uploader(
     accept_multiple_files=True,
 )
 
-camera_photo = st.camera_input("Take photo directly from camera")
+#camera_photo = st.camera_input("Take photo directly from camera")
+if "show_camera" not in st.session_state:
+    st.session_state.show_camera = False
 
+if st.button("📷 Take photo"):
+    st.session_state.show_camera = True
+
+camera_photo = None
+
+if st.session_state.show_camera:
+    camera_photo = st.camera_input("Camera")
 all_uploads = list(uploads or [])
 if camera_photo is not None:
     all_uploads.append(camera_photo)
