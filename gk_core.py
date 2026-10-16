@@ -708,7 +708,7 @@ class GeminiKeyPool:
 
     @property
     def current_label(self) -> str:
-        return f"Gemini API {self._current + 1}"
+        return f"LLM API {self._current + 1}"
 
     def mark_daily_blocked(self) -> None:
         self._daily_blocked.add(self._current)
@@ -847,19 +847,19 @@ def generate_with_failover(
 
                 if not wait_on_quota:
                     raise QuotaUnavailable(
-                        "All configured Gemini API projects have exhausted their current daily quota."
+                        "All configured LLM API projects have exhausted their current daily quota."
                     ) from exc
 
                 seconds, reset_pt = seconds_until_next_pacific_reset()
                 local_reset = reset_pt.astimezone()
-                msg = "Gemini quota consumed. Job is paused and will restart automatically after reset."
+                msg = "LLM quota consumed. Job is paused and will restart automatically after reset."
                 log(msg)
                 log(f"next automatic retry: {local_reset.strftime('%Y-%m-%d %H:%M %Z')}")
-                status("Waiting for Gemini quota", msg)
+                status("Waiting for LLM quota", msg)
                 _sleep(seconds, log)
                 key_pool.reset_daily()
                 temporary_server_blocked.clear()
-                status("Processing", "Gemini quota reset window reached; retrying automatically.")
+                status("Processing", "LLM quota reset window reached; retrying automatically.")
                 generic_429_count = 0
                 server_attempt = 0
                 continue
@@ -869,7 +869,7 @@ def generate_with_failover(
                 if generic_429_count <= len(GENERIC_429_SHORT_WAITS):
                     wait = GENERIC_429_SHORT_WAITS[generic_429_count - 1]
                     log(f"{active_label} 429/rate limit ({generic_429_count}/3): waiting {wait}s")
-                    status("Gemini rate limited", f"{active_label} temporarily rate limited; retrying.")
+                    status("LLM rate limited", f"{active_label} temporarily rate limited; retrying.")
                     _sleep(wait, log)
                     continue
                 key_pool.mark_daily_blocked()
@@ -880,9 +880,9 @@ def generate_with_failover(
                     server_attempt = 0
                     continue
                 if not wait_on_quota:
-                    raise QuotaUnavailable("All Gemini APIs are currently rate/quota limited.") from exc
+                    raise QuotaUnavailable("All LLM APIs are currently rate/quota limited.") from exc
                 seconds, _ = seconds_until_next_pacific_reset()
-                status("Waiting for Gemini quota", "All Gemini APIs are rate/quota limited; waiting for reset.")
+                status("Waiting for LLM quota", "All LLM APIs are rate/quota limited; waiting for reset.")
                 _sleep(seconds, log)
                 key_pool.reset_daily()
                 temporary_server_blocked.clear()
@@ -895,7 +895,7 @@ def generate_with_failover(
                 if server_attempt <= max(1, retries):
                     wait = min(2 ** server_attempt, 30)
                     log(f"{active_label} server/high-demand error {api_error_code(exc)} ({server_attempt}/{retries}); retrying in {wait}s")
-                    status("Gemini high demand", f"{active_label} temporarily busy; retrying.")
+                    status("LLM high demand", f"{active_label} temporarily busy; retrying.")
                     _sleep(wait, log)
                     continue
                 temporary_server_blocked.add(active_index)
@@ -905,9 +905,9 @@ def generate_with_failover(
                     generic_429_count = 0
                     continue
                 if not wait_on_quota:
-                    raise RuntimeError("All Gemini APIs are temporarily experiencing high demand.") from exc
-                msg = "All Gemini APIs are temporarily experiencing high demand; waiting 10 minutes."
-                status("Waiting for Gemini service", msg)
+                    raise RuntimeError("All LLM APIs are temporarily experiencing high demand.") from exc
+                msg = "All LLM APIs are temporarily experiencing high demand; waiting 10 minutes."
+                status("Waiting for LLM service", msg)
                 log(msg)
                 _sleep(SERVER_HIGH_DEMAND_WAIT_SECONDS, log)
                 temporary_server_blocked.clear()
@@ -928,7 +928,7 @@ def parse_page_response(response: object) -> GKPageData:
             pass
     text = getattr(response, "text", None)
     if not text:
-        raise RuntimeError("Gemini returned an empty structured response")
+        raise RuntimeError("LLM returned an empty structured response")
     return GKPageData.model_validate_json(text)
 
 
@@ -975,7 +975,7 @@ def extract_page(
                 log(f"structured response parse failed ({parse_attempt}/{retries}); retrying same page/image")
                 continue
             break
-    raise RuntimeError(f"Gemini structured extraction failed: {last_exc}")
+    raise RuntimeError(f"LLM structured extraction failed: {last_exc}")
 
 
 # -----------------------------------------------------------------------------
