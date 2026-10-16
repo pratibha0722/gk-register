@@ -234,6 +234,15 @@ if st.session_state.last_queue_ids:
                 timeout=60,
             )
             items = result.get("items", [])
+            worker_trigger_active = result.get("worker_trigger_active", True)
+
+            if not worker_trigger_active:
+                st.error(
+                    "Background worker trigger is missing. In Apps Script, run "
+                    "repairGKWorkerTrigger once. Existing Drive files do not need "
+                    "to be uploaded again."
+                )
+
             if items:
                 rows = []
                 for item in items:
@@ -245,7 +254,7 @@ if st.session_state.last_queue_ids:
                             "Attempts": item.get("attempts", 0),
                             "Records": item.get("records", 0),
                             "Last update": item.get("last_update", ""),
-                            "Next retry": item.get("next_attempt", ""),
+                            "Eligible after": item.get("next_attempt", ""),
                         }
                     )
                 st.dataframe(rows, use_container_width=True, hide_index=True)
