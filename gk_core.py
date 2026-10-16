@@ -92,6 +92,33 @@ SOURCE_FIELDS = [
     "rtt",
 ]
 
+CROSSOUT_FIELD_ALIASES = {
+    "serial_number": "sno", "serial_no": "sno", "s.no": "sno", "sno": "sno",
+    "date": "date",
+    "gk_no": "gk_no", "g.k._no": "gk_no", "gamma_knife_number": "gk_no",
+    "uhid": "uhid_no", "uhid_no": "uhid_no", "uhid_number": "uhid_no",
+    "patient_name": "patient_name", "name": "patient_name",
+    "mobile": "mobile_no", "mobile_no": "mobile_no", "mobile_number": "mobile_no",
+    "mobile_numbers": "mobile_no",
+    "age": "age", "sex": "sex", "diagnosis": "diagnosis",
+    "mask": "mask", "plan": "mask",
+    "dose": "dose",
+    "perc": "perc", "percentage": "perc",
+    "volume": "volume", "volume_cc": "volume",
+    "gura": "gura",
+    "cons": "cons", "consultant": "cons",
+    "phy": "phy", "physician": "phy",
+    "ro": "ro", "r.o": "ro", "residence": "ro",
+    "rtt": "rtt",
+    "technique": "technique",
+}
+
+OUTPUT_FIELD_ORDER = [
+    "sno", "date", "gk_no", "uhid_no", "patient_name", "mobile_no",
+    "age", "sex", "diagnosis", "mask", "dose", "perc", "volume",
+    "gura", "cons", "phy", "ro", "rtt", "technique",
+]
+
 EXCEL_HEADERS = [
     "Serial Number",
     "Date",
@@ -143,6 +170,13 @@ class GKRecord(BaseModel):
     ro: str = ""
     rtt: str = ""
     technique: str = ""  # derived locally; model may leave blank
+    crossed_out_fields: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Logical fields whose visible value is fully crossed/cancelled and has "
+            "no uncrossed replacement in the same cell/row."
+        ),
+    )
 
 
 class GKPageData(BaseModel):
@@ -247,7 +281,25 @@ S.No AND DATE ARE CRITICAL:
 - NEVER invent/carry a date from the row above/below, month heading, page title,
   sequence, S.No, GK number, or any other context.
 - If a date is unreadable/blank, return "" rather than guessing.
-- Preserve visible punctuation/style such as 08-09-26 or 8.09.26.
+- Return every readable date in DD/MM/YY format only.
+  Examples: 8-9-26 -> 08/09/26, 08.09.2026 -> 08/09/26,
+  8 Sep 2026 -> 08/09/26.
+
+CROSSED / CANCELLED VALUES:
+- A value crossed out by a pen line, strike-through, scribble, X, or clear
+  cancellation mark is NOT valid data. Do not transcribe that cancelled value.
+- This applies to EVERY field: S.No, Date, GK No, UHID, name, mobile, age, sex,
+  diagnosis, mask, dose, percentage, volume, GURA, consultant, physician,
+  residence, RTT, and technique markers.
+- If the old value is crossed out and an uncrossed replacement is written in the
+  same cell/row, return ONLY the uncrossed replacement.
+- If the only visible value for a field is crossed out and there is no replacement,
+  return that field as "" and include its field name in crossed_out_fields.
+- Do NOT discard the whole patient row merely because one cell is crossed out.
+- Omit the whole row only when the entire physical patient row is clearly cancelled.
+- For multiple masks/plans (M1, M2, M3, ...), ignore every crossed/cancelled mask.
+  Use the LAST UNCROSSED mask/plan and take Dose, Percentage, Volume, GURA,
+  Consultant, Physician, Residence and RTT only from that same last uncrossed mask.
 
 G.K. REPEAT RULE:
 - Transcribe the G.K. cell literally enough to preserve a repeat marker.
@@ -397,20 +449,115 @@ def normalize_volume_cc(value: str) -> str:
     return f"{s} cc"
 
 
+
+def normalize_date_ddmmyy(value: str) -> str:
+    """Normalize a readable date to DD/MM/YY; otherwise return blank."""
+    s = clean_text(value)
+    if not s:
+        return ""
+
+    m = re.fullmatch(r"\s*(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\s*", s)
+    if m:
+        day, month, year = map(int, m.groups())
+        if year < 100:
+            year += 2000
+        try:
+            return datetime(year, month, day).strftime("%d/%m/%y")
+        except ValueError:
+            return ""
+
+    m = re.fullmatch(r"\s*(\d{4})[./-](\d{1,2})[./-](\d{1,2})\s*", s)
+    if m:
+        year, month, day = map(int, m.groups())
+        try:
+            return datetime(year, month, day).strftime("%d/%m/%y")
+        except ValueError:
+            return ""
+
+    months = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2,
+        "mar": 3, "march": 3, "apr": 4, "april": 4, "may": 5,
+        "jun": 6, "june": 6, "jul": 7, "july": 7,
+        "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10, "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+    cleaned = re.sub(r"[,]+", " ", s.lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    m = re.fullmatch(r"(\d{1,2})\s+([a-z]+)\s+(\d{2,4})", cleaned)
+    if m:
+        day = int(m.group(1))
+        month = months.get(m.group(2))
+        year = int(m.group(3))
+    else:
+        m = re.fullmatch(r"([a-z]+)\s+(\d{1,2})\s+(\d{2,4})", cleaned)
+        if not m:
+            return ""
+        month = months.get(m.group(1))
+        day = int(m.group(2))
+        year = int(m.group(3))
+
+    if not month:
+        return ""
+    if year < 100:
+        year += 2000
+    try:
+        return datetime(year, month, day).strftime("%d/%m/%y")
+    except ValueError:
+        return ""
+
+
+
+def canonical_crossed_fields(values: Iterable[str]) -> List[str]:
+    """Return unique canonical output field names explicitly marked crossed out."""
+    result: List[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        key = clean_text(raw).casefold()
+        key = re.sub(r"[^a-z0-9.]+", "_", key).strip("_")
+        field = CROSSOUT_FIELD_ALIASES.get(key)
+        if field and field in OUTPUT_FIELD_ORDER and field not in seen:
+            seen.add(field)
+            result.append(field)
+    return result
+
+
+def record_clear_fields(record: GKRecord) -> List[str]:
+    """Fields that should intentionally clear an existing stored value."""
+    clear = canonical_crossed_fields(record.crossed_out_fields)
+    # If an uncrossed replacement survived normalization, do not clear it.
+    return [field for field in clear if not clean_text(getattr(record, field, ""))]
+
+
 def normalize_record(record: GKRecord) -> GKRecord:
     data = record.model_dump()
+
+    crossed = canonical_crossed_fields(data.get("crossed_out_fields") or [])
+
     for k in list(data):
-        if k != "source_row":
+        if k not in {"source_row", "crossed_out_fields"}:
             data[k] = clean_text(data[k])
 
+    # The schema requires a field to be blank when the only visible value was
+    # crossed out. If Gemini also returned a nonblank value, treat that as an
+    # uncrossed replacement and do NOT destructively clear it.
+
     data["sno"] = normalize_sno(data["sno"])
+    data["date"] = normalize_date_ddmmyy(data["date"])
     data["gk_no"] = normalize_gk_repeat(data["gk_no"])
 
-    name, mobile = split_name_and_mobile(data["patient_name"], data.get("mobile_no", ""))
+    name, mobile = split_name_and_mobile(
+        data["patient_name"],
+        data.get("mobile_no", ""),
+    )
     data["patient_name"] = name
     data["mobile_no"] = mobile
 
-    age, sex = split_age_and_sex(data.get("age", ""), data.get("sex", ""))
+    age, sex = split_age_and_sex(
+        data.get("age", ""),
+        data.get("sex", ""),
+    )
     data["age"] = age
     data["sex"] = sex
 
@@ -421,13 +568,20 @@ def normalize_record(record: GKRecord) -> GKRecord:
     data["mask"] = clean_text(data.get("mask", ""))
     data["volume"] = normalize_volume_cc(data.get("volume", ""))
 
+    # Keep only clear markers whose final normalized field is still blank.
+    # If there is a valid uncrossed replacement, that value wins.
+    data["crossed_out_fields"] = [
+        field for field in crossed if not clean_text(data.get(field, ""))
+    ]
+
     return GKRecord(**data)
 
 
 def merge_records(a: GKRecord, b: GKRecord) -> GKRecord:
-    """Merge duplicate interpretations without letting a new date overwrite one."""
+    """Merge duplicate interpretations while preserving explicit cross-out intent."""
     out = a.model_dump()
     incoming = b.model_dump()
+
     for field in SOURCE_FIELDS + ["technique"]:
         av = clean_text(out.get(field, ""))
         bv = clean_text(incoming.get(field, ""))
@@ -436,8 +590,20 @@ def merge_records(a: GKRecord, b: GKRecord) -> GKRecord:
             continue
         if not av and bv:
             out[field] = bv
+
     if not out.get("source_row") and incoming.get("source_row"):
         out["source_row"] = incoming["source_row"]
+
+    # Cross-out is an intentional clear only when no valid uncrossed value was
+    # recovered for that field from either duplicate interpretation.
+    combined_clear = canonical_crossed_fields(
+        list(out.get("crossed_out_fields") or [])
+        + list(incoming.get("crossed_out_fields") or [])
+    )
+    out["crossed_out_fields"] = [
+        field for field in combined_clear if not clean_text(out.get(field, ""))
+    ]
+
     return GKRecord(**out)
 
 
@@ -1034,9 +1200,15 @@ def upsert_excel_records(output: Path, records: List[GKRecord], source_filename:
                     values[1] = existing_date
                     result.date_conflicts += 1
 
+                clear_fields = set(record_clear_fields(rec))
                 for c, value in enumerate(values, start=1):
-                    # Never erase a good existing value because OCR returned blank.
-                    if clean_text(value):
+                    field = OUTPUT_FIELD_ORDER[c - 1]
+                    if field in clear_fields:
+                        # Explicitly crossed/cancelled in the source: remove the
+                        # old stored value. This is different from an OCR blank.
+                        ws.cell(target, c, "")
+                    elif clean_text(value):
+                        # Ordinary OCR blank must never erase a good existing value.
                         ws.cell(target, c, value)
                 ws.cell(target, FILENAME_COL, source_filename)
                 result.updated += 1
@@ -1110,7 +1282,13 @@ class AppsScriptGKWriter:
             "page_number": page_number,
             "total_pages": total_pages,
             "total_records": total_records,
-            "rows": [record_to_row(r) for r in records],
+            "rows": [
+                {
+                    "values": record_to_row(r),
+                    "clear_fields": record_clear_fields(r),
+                }
+                for r in records
+            ],
         })
 
     def status(self, state: str, page_number: int, total_pages: int, total_records: int, message: str) -> None:
