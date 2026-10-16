@@ -210,10 +210,13 @@ if st.button(
             name = item.get("file_name", "File")
             drive_url = item.get("drive_url", "")
             queue_status = item.get("status", "Pending")
+            reason = item.get("reason", "Waiting for background worker")
             if drive_url:
-                st.markdown(f"- [{name}]({drive_url}) — **{queue_status}**")
+                st.markdown(
+                    f"- [{name}]({drive_url}) — **{queue_status}** — {reason}"
+                )
             else:
-                st.write(f"- {name} — {queue_status}")
+                st.write(f"- {name} — {queue_status} — {reason}")
 
     except Exception as exc:
         status.error("Upload/queue operation stopped.")
@@ -238,10 +241,11 @@ if st.session_state.last_queue_ids:
                         {
                             "File": item.get("file_name", ""),
                             "Status": item.get("status", ""),
+                            "Reason": item.get("reason", item.get("last_error", "")),
                             "Attempts": item.get("attempts", 0),
                             "Records": item.get("records", 0),
                             "Last update": item.get("last_update", ""),
-                            "Message": item.get("last_error", ""),
+                            "Next retry": item.get("next_attempt", ""),
                         }
                     )
                 st.dataframe(rows, use_container_width=True, hide_index=True)
