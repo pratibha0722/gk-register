@@ -224,7 +224,32 @@ if st.button(
 
 
 if st.session_state.last_queue_ids:
-    if st.button("Refresh processing status"):
+    col_refresh, col_retry = st.columns(2)
+
+    refresh_clicked = col_refresh.button("Refresh processing status")
+    retry_clicked = col_retry.button("Retry waiting files now")
+
+    if retry_clicked:
+        try:
+            retry_result = receiver_post(
+                {
+                    "action": "queue_retry_now",
+                    "queue_ids": st.session_state.last_queue_ids,
+                },
+                timeout=60,
+            )
+            changed = int(retry_result.get("changed", 0) or 0)
+            if changed:
+                st.success(
+                    f"{changed} waiting file(s) re-queued. No re-upload was needed."
+                )
+            else:
+                st.info("No waiting/error files needed a manual retry.")
+            refresh_clicked = True
+        except Exception as exc:
+            st.exception(exc)
+
+    if refresh_clicked:
         try:
             result = receiver_post(
                 {
@@ -244,12 +269,21 @@ if st.session_state.last_queue_ids:
                 )
 
             if items:
+                completed = sum(1 for x in items if x.get("status") == "Completed")
+                processing = sum(1 for x in items if x.get("status") == "Processing")
+                waiting = len(items) - completed - processing
+                st.caption(
+                    f"This upload session: {completed} completed • "
+                    f"{processing} processing • {waiting} waiting/retrying"
+                )
+
                 rows = []
                 for item in items:
+                    status_value = item.get("status", "")
                     rows.append(
                         {
                             "File": item.get("file_name", ""),
-                            "Status": item.get("status", ""),
+                            "Status": status_value,
                             "Reason": item.get("reason", item.get("last_error", "")),
                             "Attempts": item.get("attempts", 0),
                             "Records": item.get("records", 0),
@@ -258,6 +292,20 @@ if st.session_state.last_queue_ids:
                         }
                     )
                 st.dataframe(rows, use_container_width=True, hide_index=True)
+
+                for item in items:
+                    name = item.get("file_name", "File")
+                    status_value = item.get("status", "")
+                    records = int(item.get("records", 0) or 0)
+                    reason = item.get("reason", "")
+                    if status_value == "Completed":
+                        st.success(f"✅ {name}: completed ({records} records). {reason}")
+                    elif status_value == "Processing":
+                        st.info(f"⏳ {name}: processing now.")
+                    elif status_value in {"Retry", "Waiting for quota"}:
+                        st.warning(f"⚠️ {name}: {status_value}. {reason}")
+                    elif status_value == "Error":
+                        st.error(f"❌ {name}: {reason}")
             else:
                 st.info("No queue records found for this upload session.")
         except Exception as exc:
