@@ -152,6 +152,14 @@ if all_uploads:
 
 if "last_queue_ids" not in st.session_state:
     st.session_state.last_queue_ids = []
+if "history_items" not in st.session_state:
+    st.session_state.history_items = []
+if "history_queue_ids" not in st.session_state:
+    st.session_state.history_queue_ids = []
+if "history_loaded_date" not in st.session_state:
+    st.session_state.history_loaded_date = ""
+if "history_worker_active" not in st.session_state:
+    st.session_state.history_worker_active = True
 
 if st.button(
     "Upload to Drive and start processing",
@@ -310,3 +318,141 @@ if st.session_state.last_queue_ids:
                 st.info("No queue records found for this upload session.")
         except Exception as exc:
             st.exception(exc)
+
+st.divider()
+st.subheader("Previous uploads / daily history")
+st.caption(
+    "Use this after a page refresh, browser restart, or on a later day to check "
+    "whether files were saved to Drive and whether processing completed."
+)
+
+history_date = st.date_input(
+    "Choose upload date",
+    value=datetime.now(IST).date(),
+    key="history_date_selector",
+)
+history_date_iso = history_date.isoformat()
+
+history_col_check, history_col_retry = st.columns(2)
+history_check_clicked = history_col_check.button(
+    "Check uploads for selected day",
+    use_container_width=True,
+)
+history_retry_clicked = history_col_retry.button(
+    "Retry waiting files from selected day",
+    use_container_width=True,
+    disabled=not bool(st.session_state.history_queue_ids)
+    or st.session_state.history_loaded_date != history_date_iso,
+)
+
+
+def load_history_for_day(day_iso: str) -> None:
+    result = receiver_post(
+        {
+            "action": "queue_status",
+            "date_ist": day_iso,
+        },
+        timeout=60,
+    )
+    items = result.get("items", [])
+    st.session_state.history_items = items
+    st.session_state.history_queue_ids = [
+        str(item.get("queue_id", ""))
+        for item in items
+        if item.get("queue_id")
+    ]
+    st.session_state.history_loaded_date = day_iso
+    st.session_state.history_worker_active = result.get(
+        "worker_trigger_active", True
+    )
+
+
+if history_check_clicked:
+    try:
+        load_history_for_day(history_date_iso)
+    except Exception as exc:
+        st.exception(exc)
+
+if history_retry_clicked:
+    try:
+        retry_result = receiver_post(
+            {
+                "action": "queue_retry_now",
+                "queue_ids": st.session_state.history_queue_ids,
+            },
+            timeout=60,
+        )
+        changed = int(retry_result.get("changed", 0) or 0)
+        if changed:
+            st.success(
+                f"{changed} waiting/error file(s) from this day were re-queued. "
+                "No re-upload was needed."
+            )
+        else:
+            st.info("No waiting/error files from this day needed a manual retry.")
+        load_history_for_day(history_date_iso)
+    except Exception as exc:
+        st.exception(exc)
+
+if st.session_state.history_loaded_date == history_date_iso:
+    history_items = st.session_state.history_items
+
+    if not st.session_state.history_worker_active:
+        st.error(
+            "Background worker trigger is missing. In Apps Script run "
+            "repairGKWorkerTrigger once. Files already in Drive do not need "
+            "to be uploaded again."
+        )
+
+    if history_items:
+        completed = sum(
+            1 for item in history_items if item.get("status") == "Completed"
+        )
+        processing = sum(
+            1 for item in history_items if item.get("status") == "Processing"
+        )
+        waiting = len(history_items) - completed - processing
+
+        st.caption(
+            f"Selected day: {len(history_items)} file(s) uploaded to Drive | "
+            f"{completed} completed | {processing} processing | "
+            f"{waiting} waiting/retrying/error"
+        )
+
+        history_rows = []
+        for item in history_items:
+            history_rows.append(
+                {
+                    "File": item.get("file_name", ""),
+                    "Drive saved": "Yes" if item.get("drive_url") else "No",
+                    "Status": item.get("status", ""),
+                    "Reason": item.get(
+                        "reason", item.get("last_error", "")
+                    ),
+                    "Attempts": item.get("attempts", 0),
+                    "Records": item.get("records", 0),
+                    "Uploaded at": item.get("added_at", ""),
+                    "Last update": item.get("last_update", ""),
+                    "Eligible after": item.get("next_attempt", ""),
+                }
+            )
+
+        st.dataframe(
+            history_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption("Open the stored Drive image/file:")
+        for item in history_items:
+            drive_url = item.get("drive_url", "")
+            if not drive_url:
+                continue
+            name = str(item.get("file_name", "File")).replace("[", "\\[").replace("]", "\\]")
+            status_value = item.get("status", "")
+            st.markdown(f"- [{name}]({drive_url}) - **{status_value}**")
+    else:
+        st.info("No uploads were found for the selected date.")
+elif st.session_state.history_loaded_date:
+    st.info("Date changed. Click 'Check uploads for selected day' to load that date.")
+
